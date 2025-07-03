@@ -8,6 +8,7 @@
 (define-constant ERR_INVOICE_EXPIRED (err u106))
 (define-constant ERR_CANNOT_BUY_OWN_INVOICE (err u107))
 (define-constant ERR_INVOICE_ALREADY_PAID (err u108))
+(define-constant ERR_INVALID_SCORE (err u109))
 
 (define-data-var next-invoice-id uint u1)
 (define-data-var platform-fee-rate uint u250)
@@ -258,3 +259,112 @@
 (define-read-only (get-next-invoice-id)
   (var-get next-invoice-id)
 )
+
+
+(define-map credit-scores
+  { user: principal }
+  {
+    score: uint,
+    total-invoices: uint,
+    paid-on-time: uint,
+    late-payments: uint,
+    defaults: uint,
+    last-updated: uint
+  }
+)
+
+(define-map payment-history
+  { user: principal, invoice-id: uint }
+  {
+    payment-status: uint,
+    payment-block: uint
+  }
+)
+
+(define-private (get-credit-score (user principal))
+  (default-to 
+    { score: u750, total-invoices: u0, paid-on-time: u0, late-payments: u0, defaults: u0, last-updated: u0 }
+    (map-get? credit-scores { user: user })
+  )
+)
+
+(define-private (calculate-new-score (current-score uint) (total-invoices uint) (paid-on-time uint) (late-payments uint) (defaults uint))
+  (let (
+    (payment-rate (if (> total-invoices u0) (/ (* paid-on-time u100) total-invoices) u0))
+    (default-rate (if (> total-invoices u0) (/ (* defaults u100) total-invoices) u0))
+  )
+    (if (<= total-invoices u5)
+      u750
+      (+ u300 
+         (/ (* payment-rate u4) u1)
+         (if (is-eq defaults u0) u150 u0)
+         (if (<= default-rate u5) u100 u0)
+      )
+    )
+  )
+)
+
+(define-private (update-credit-score (user principal) (payment-type uint))
+  (let (
+    (current-data (get-credit-score user))
+    (new-total (+ (get total-invoices current-data) u1))
+    (new-paid (if (is-eq payment-type u1) (+ (get paid-on-time current-data) u1) (get paid-on-time current-data)))
+    (new-late (if (is-eq payment-type u2) (+ (get late-payments current-data) u1) (get late-payments current-data)))
+    (new-defaults (if (is-eq payment-type u3) (+ (get defaults current-data) u1) (get defaults current-data)))
+    (new-score (calculate-new-score (get score current-data) new-total new-paid new-late new-defaults))
+  )
+    (map-set credit-scores
+      { user: user }
+      {
+        score: new-score,
+        total-invoices: new-total,
+        paid-on-time: new-paid,
+        late-payments: new-late,
+        defaults: new-defaults,
+        last-updated: stacks-block-height
+      }
+    )
+  )
+)
+
+(define-public (record-payment (invoice-id uint) (debtor principal) (payment-type uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= payment-type u3) ERR_INVALID_SCORE)
+    
+    (map-set payment-history
+      { user: debtor, invoice-id: invoice-id }
+      { payment-status: payment-type, payment-block: stacks-block-height }
+    )
+    
+    (update-credit-score debtor payment-type)
+    (ok true)
+  )
+)
+
+(define-public (mark-invoice-default (invoice-id uint))
+  (let ((invoice (unwrap! (map-get? invoices { invoice-id: invoice-id }) ERR_INVOICE_NOT_FOUND)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (< (get due-date invoice) stacks-block-height) ERR_INVOICE_NOT_FOUND)
+    (asserts! (not (get is-paid invoice)) ERR_INVOICE_ALREADY_PAID)
+    
+    (try! (record-payment invoice-id (get debtor invoice) u3))
+    (ok true)
+  )
+)
+
+(define-read-only (get-user-credit-score (user principal))
+  (get-credit-score user)
+)
+
+(define-read-only (get-credit-rating (user principal))
+  (let ((score (get score (get-credit-score user))))
+    (if (>= score u800) "AAA"
+    (if (>= score u750) "AA"
+    (if (>= score u700) "A"
+    (if (>= score u650) "BBB"
+    (if (>= score u600) "BB"
+    (if (>= score u550) "B"
+    "C"))))))
+  )
+  )
