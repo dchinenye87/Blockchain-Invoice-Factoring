@@ -10,6 +10,11 @@
 (define-constant ERR_INVOICE_ALREADY_PAID (err u108))
 (define-constant ERR_INVALID_SCORE (err u109))
 
+(define-constant ERR_DISPUTE_NOT_FOUND (err u110))
+(define-constant ERR_DISPUTE_ALREADY_EXISTS (err u111))
+(define-constant ERR_DISPUTE_ALREADY_RESOLVED (err u112))
+(define-constant ERR_INVALID_DISPUTE_STATUS (err u113))
+
 (define-data-var next-invoice-id uint u1)
 (define-data-var platform-fee-rate uint u250)
 
@@ -368,3 +373,72 @@
     "C"))))))
   )
   )
+
+(define-map invoice-disputes
+  { invoice-id: uint }
+  {
+    complainant: principal,
+    respondent: principal,
+    reason: (string-ascii 128),
+    status: uint,
+    created-at: uint,
+    resolved-at: uint,
+    resolution: (string-ascii 256),
+    evidence-hash: (buff 32)
+  }
+)
+
+(define-public (raise-dispute (invoice-id uint) (reason (string-ascii 128)) (evidence-hash (buff 32)))
+  (let ((invoice (unwrap! (map-get? invoices { invoice-id: invoice-id }) ERR_INVOICE_NOT_FOUND)))
+    (asserts! (is-none (map-get? invoice-disputes { invoice-id: invoice-id })) ERR_DISPUTE_ALREADY_EXISTS)
+    (asserts! (or (is-eq tx-sender (get current-owner invoice)) 
+                  (is-eq tx-sender (get debtor invoice))) ERR_NOT_AUTHORIZED)
+    
+    (map-set invoice-disputes
+      { invoice-id: invoice-id }
+      {
+        complainant: tx-sender,
+        respondent: (if (is-eq tx-sender (get current-owner invoice)) (get debtor invoice) (get current-owner invoice)),
+        reason: reason,
+        status: u1,
+        created-at: stacks-block-height,
+        resolved-at: u0,
+        resolution: "",
+        evidence-hash: evidence-hash
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (resolve-dispute (invoice-id uint) (resolution (string-ascii 256)) (refund-to-buyer bool))
+  (let (
+    (dispute (unwrap! (map-get? invoice-disputes { invoice-id: invoice-id }) ERR_DISPUTE_NOT_FOUND))
+    (invoice (unwrap! (map-get? invoices { invoice-id: invoice-id }) ERR_INVOICE_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get status dispute) u1) ERR_DISPUTE_ALREADY_RESOLVED)
+    
+    (if refund-to-buyer
+      (begin
+        (add-to-balance (get complainant dispute) (get amount invoice))
+        (try! (subtract-from-balance (get respondent dispute) (get amount invoice)))
+      )
+      true
+    )
+    
+    (map-set invoice-disputes
+      { invoice-id: invoice-id }
+      (merge dispute {
+        status: u2,
+        resolved-at: stacks-block-height,
+        resolution: resolution
+      })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-dispute (invoice-id uint))
+  (map-get? invoice-disputes { invoice-id: invoice-id })
+)
