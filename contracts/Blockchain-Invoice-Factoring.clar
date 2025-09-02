@@ -15,6 +15,9 @@
 (define-constant ERR_DISPUTE_ALREADY_RESOLVED (err u112))
 (define-constant ERR_INVALID_DISPUTE_STATUS (err u113))
 
+(define-constant ERR_INVALID_RISK_PARAMS (err u200))
+(define-constant ERR_RISK_ASSESSMENT_EXISTS (err u201))
+
 (define-data-var next-invoice-id uint u1)
 (define-data-var platform-fee-rate uint u250)
 
@@ -441,4 +444,121 @@
 
 (define-read-only (get-dispute (invoice-id uint))
   (map-get? invoice-disputes { invoice-id: invoice-id })
+)
+
+
+(define-map invoice-risk-assessments
+  { invoice-id: uint }
+  {
+    risk-score: uint,
+    days-to-maturity: uint,
+    debtor-credit-score: uint,
+    invoice-amount-tier: uint,
+    industry-risk-factor: uint,
+    suggested-discount: uint,
+    assessment-timestamp: uint
+  }
+)
+
+(define-map industry-risk-factors
+  { industry-code: uint }
+  { risk-multiplier: uint }
+)
+
+(define-private (get-amount-tier (amount uint))
+  (if (<= amount u100000) u1
+  (if (<= amount u500000) u2
+  (if (<= amount u1000000) u3
+  (if (<= amount u5000000) u4
+  u5))))
+)
+
+(define-private (calculate-days-to-maturity (due-date uint))
+  (if (> due-date stacks-block-height)
+    (- due-date stacks-block-height)
+    u0)
+)
+
+(define-private (calculate-risk-score (debtor-score uint) (days uint) (amount-tier uint) (industry-factor uint))
+  (let (
+    (time-risk (if (< days u50) u300 (if (< days u100) u200 u100)))
+    (credit-risk (- u1000 debtor-score))
+    (amount-risk (* amount-tier u50))
+    (industry-risk (* industry-factor u10))
+  )
+    (+ time-risk credit-risk amount-risk industry-risk)
+  )
+)
+
+(define-private (calculate-suggested-discount (risk-score uint))
+  (if (< risk-score u300) u5
+  (if (< risk-score u500) u10
+  (if (< risk-score u700) u15
+  (if (< risk-score u900) u25
+  u35))))
+)
+
+(define-public (set-industry-risk (industry-code uint) (risk-multiplier uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= risk-multiplier u100) ERR_INVALID_RISK_PARAMS)
+    (map-set industry-risk-factors { industry-code: industry-code } { risk-multiplier: risk-multiplier })
+    (ok true)
+  )
+)
+
+(define-public (assess-invoice-risk (invoice-id uint) (industry-code uint))
+  (let (
+    (invoice (unwrap! (map-get? invoices { invoice-id: invoice-id }) ERR_INVOICE_NOT_FOUND))
+    (debtor-credit (get-credit-score (get debtor invoice)))
+    (days-to-maturity (calculate-days-to-maturity (get due-date invoice)))
+    (amount-tier (get-amount-tier (get amount invoice)))
+    (industry-factor (default-to u5 (get risk-multiplier (map-get? industry-risk-factors { industry-code: industry-code }))))
+    (risk-score (calculate-risk-score (get score debtor-credit) days-to-maturity amount-tier industry-factor))
+    (suggested-discount (calculate-suggested-discount risk-score))
+  )
+    (asserts! (is-eq tx-sender (get current-owner invoice)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-none (map-get? invoice-risk-assessments { invoice-id: invoice-id })) ERR_RISK_ASSESSMENT_EXISTS)
+    
+    (map-set invoice-risk-assessments
+      { invoice-id: invoice-id }
+      {
+        risk-score: risk-score,
+        days-to-maturity: days-to-maturity,
+        debtor-credit-score: (get score debtor-credit),
+        invoice-amount-tier: amount-tier,
+        industry-risk-factor: industry-factor,
+        suggested-discount: suggested-discount,
+        assessment-timestamp: stacks-block-height
+      }
+    )
+    (ok { risk-score: risk-score, suggested-discount: suggested-discount })
+  )
+)
+
+(define-read-only (get-risk-assessment (invoice-id uint))
+  (map-get? invoice-risk-assessments { invoice-id: invoice-id })
+)
+
+(define-read-only (get-pricing-recommendation (invoice-id uint))
+  (match (map-get? invoice-risk-assessments { invoice-id: invoice-id })
+    assessment (let (
+      (invoice (unwrap-panic (map-get? invoices { invoice-id: invoice-id })))
+      (discount-rate (get suggested-discount assessment))
+      (face-value (get amount invoice))
+      (suggested-price (- face-value (/ (* face-value discount-rate) u100)))
+    )
+      (some { 
+        face-value: face-value,
+        suggested-price: suggested-price,
+        discount-rate: discount-rate,
+        risk-score: (get risk-score assessment)
+      })
+    )
+    none
+  )
+)
+
+(define-read-only (get-industry-risk-factor (industry-code uint))
+  (map-get? industry-risk-factors { industry-code: industry-code })
 )
