@@ -1,0 +1,32 @@
+[project]
+name = 'Blockchain-Invoice-Factoring'
+description = ''
+authors = []
+telemetry = true
+cache_dir = '.\.cache'
+requirements = []
+[contracts.Blockchain-Invoice-Factoring]
+path = 'contracts/Blockchain-Invoice-Factoring.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.invoice-bundler]
+path = 'contracts/invoice-bundler.clar'
+clarity_version = 3
+epoch = 3.1
+[contracts.invoice-pool]
+path = 'contracts/invoice-pool.clar'
+clarity_version = 3
+epoch = 3.1
+
+[repl.analysis]
+passes = ['check_checker']
+
+[repl.analysis.check_checker]
+strict = false
+trusted_sender = false
+trusted_caller = false
+callee_filter = false
+
+[repl.remote_data]
+enabled = false
+api_url = 'https://api.hiro.so'
