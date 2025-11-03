@@ -13,6 +13,11 @@ epoch = 3.1
 path = 'contracts/invoice-bundler.clar'
 clarity_version = 3
 epoch = 3.1
+[contracts.invoice-pool]
+path = 'contracts/invoice-pool.clar'
+clarity_version = 3
+epoch = 3.1
+
 [repl.analysis]
 passes = ['check_checker']
 
